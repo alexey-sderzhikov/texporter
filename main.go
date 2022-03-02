@@ -10,8 +10,19 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/joho/godotenv"
 )
+
+type Project struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Channel string `json:"channel"`
+}
+
+type Config struct {
+	RedmineAPIKey    string    `json:"redmine_api_key"`
+	TelegramBotToken string    `json:"telegram_bot_token"`
+	ProjectList      []Project `json:"projects"`
+}
 
 type NameAndID struct {
 	ID   int64  `json:"id"`
@@ -43,22 +54,30 @@ type TimeEntryListResponse struct {
 }
 
 type Texporter struct {
-	RedmineAPIKey    string
-	TelegramBotToken string
-	TelegramBot      *tgbotapi.BotAPI
+	RedmineAPIKey string
+	TelegramBot   *tgbotapi.BotAPI
+	ProjectList   []Project
 }
 
 func NewTexporter() (Texporter, error) {
 	t := Texporter{}
-	err := godotenv.Load()
+
+	bytes, err := os.ReadFile("config.json")
 	if err != nil {
 		return Texporter{}, err
 	}
 
-	t.RedmineAPIKey = os.Getenv("REDMINE_API_KEY")
-	t.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+	config := Config{}
+	err = json.Unmarshal(bytes, &config)
+	if err != nil {
+		return Texporter{}, nil
+	}
 
-	t.TelegramBot, err = tgbotapi.NewBotAPI(t.TelegramBotToken)
+	t.ProjectList = config.ProjectList
+
+	t.RedmineAPIKey = config.RedmineAPIKey
+
+	t.TelegramBot, err = tgbotapi.NewBotAPI(config.TelegramBotToken)
 	if err != nil {
 		return Texporter{}, err
 	}
@@ -139,19 +158,21 @@ func main() {
 		log.Fatal(err)
 	}
 
-	timeEntries := t.getListTimeEntries(prevWorkDate(), "91")
+	for _, p := range t.ProjectList {
+		timeEntries := t.getListTimeEntries(prevWorkDate(), p.ID)
 
-	for _, te := range timeEntries {
-		mess := fmt.Sprintf(
-			"%v\n%v\n%v\nInternal #%v: %v",
-			te.SpentOn,
-			te.User.Name,
-			te.Activity.Name,
-			te.Issue.ID,
-			te.Comments,
-		)
+		for _, te := range timeEntries {
+			mess := fmt.Sprintf(
+				"%v\n%v\n%v\nInternal #%v: %v",
+				te.SpentOn,
+				te.User.Name,
+				te.Activity.Name,
+				te.Issue.ID,
+				te.Comments,
+			)
 
-		t.sendTextToChannel("@texporter_test", mess)
+			t.sendTextToChannel(p.Channel, mess)
+		}
 	}
 
 }
