@@ -13,9 +13,12 @@ import (
 )
 
 type Project struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Channel string `json:"channel"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ChannelUsername string `json:"channel_username"`
+	ChatID          int64  `json:"chat_id"`
+	Tracker         string `json:"tracker"`
+	Export          bool   `json:"export"`
 }
 
 type Config struct {
@@ -70,7 +73,7 @@ func NewTexporter() (Texporter, error) {
 	config := Config{}
 	err = json.Unmarshal(bytes, &config)
 	if err != nil {
-		return Texporter{}, nil
+		return Texporter{}, err
 	}
 
 	t.ProjectList = config.ProjectList
@@ -141,8 +144,8 @@ func prevWorkDate() string {
 	return today.AddDate(0, 0, -1).Format("2006-01-02")
 }
 
-func (t Texporter) sendTextToChannel(channel string, text string) error {
-	msg := tgbotapi.NewMessageToChannel(channel, text)
+func (t Texporter) sendTextToChannel(chatID int64, text string) error {
+	msg := tgbotapi.NewMessage(chatID, text)
 
 	_, err := t.TelegramBot.Send(msg)
 	if err != nil {
@@ -152,27 +155,68 @@ func (t Texporter) sendTextToChannel(channel string, text string) error {
 	return nil
 }
 
+func (t Texporter) exportAllTimeEntries() {
+	for _, p := range t.ProjectList {
+		if !p.Export {
+			continue
+		}
+
+		// key - user id; value - message to export
+		messages := make(map[int64]string)
+
+		timeEntries := t.getListTimeEntries(prevWorkDate(), p.ID)
+
+		for _, te := range timeEntries {
+			_, ok := messages[te.User.ID]
+			if !ok {
+				mess := fmt.Sprintf(
+					"%v\n%v\n%v\n%v #%v: %v\n",
+					te.SpentOn,
+					te.User.Name,
+					te.Activity.Name,
+					p.Tracker,
+					te.Issue.ID,
+					te.Comments,
+				)
+
+				messages[te.User.ID] = mess
+			} else {
+				mess := fmt.Sprintf(
+					"%v\n%v #%v: %v\n",
+					te.Activity.Name,
+					p.Tracker,
+					te.Issue.ID,
+					te.Comments,
+				)
+
+				messages[te.User.ID] += mess
+			}
+		}
+
+		for _, mess := range messages {
+			t.sendTextToChannel(p.ChatID, mess)
+		}
+	}
+}
+
 func main() {
 	t, err := NewTexporter()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for _, p := range t.ProjectList {
-		timeEntries := t.getListTimeEntries(prevWorkDate(), p.ID)
+	t.exportAllTimeEntries()
 
-		for _, te := range timeEntries {
-			mess := fmt.Sprintf(
-				"%v\n%v\n%v\nInternal #%v: %v",
-				te.SpentOn,
-				te.User.Name,
-				te.Activity.Name,
-				te.Issue.ID,
-				te.Comments,
-			)
+	// updateConfig := tgbotapi.NewUpdate(0)
 
-			t.sendTextToChannel(p.Channel, mess)
-		}
-	}
+	// updateConfig.Timeout = 30
 
+	// updates := t.TelegramBot.GetUpdatesChan(updateConfig)
+
+	// for update := range updates {
+
+	// 	if update.Message == nil {
+	// 		continue
+	// 	}
+	// }
 }
