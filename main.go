@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.uber.org/zap"
 )
 
 type Project struct {
@@ -60,20 +60,28 @@ type Texporter struct {
 	RedmineAPIKey string
 	TelegramBot   *tgbotapi.BotAPI
 	ProjectList   []Project
+	Logger        *zap.SugaredLogger
 }
 
 func NewTexporter() (Texporter, error) {
 	t := Texporter{}
 
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+
+	t.Logger = logger.Sugar()
+
 	bytes, err := os.ReadFile("config.json")
 	if err != nil {
-		return Texporter{}, err
+		return Texporter{}, fmt.Errorf("error during reading 'config.json'\n%v", err)
 	}
 
 	config := Config{}
 	err = json.Unmarshal(bytes, &config)
 	if err != nil {
-		return Texporter{}, err
+		return Texporter{}, fmt.Errorf("error during unmarhaling config file\n%v", err)
 	}
 
 	t.ProjectList = config.ProjectList
@@ -82,15 +90,15 @@ func NewTexporter() (Texporter, error) {
 
 	t.TelegramBot, err = tgbotapi.NewBotAPI(config.TelegramBotToken)
 	if err != nil {
-		return Texporter{}, err
+		return Texporter{}, fmt.Errorf("error during Telegram Bot creating\n%v", err)
 	}
 
-	t.TelegramBot.Debug = true
+	// t.TelegramBot.Debug = true
 
 	return t, nil
 }
 
-func (t Texporter) getListTimeEntries(date string, project string) []TimeEntryResponse {
+func (t Texporter) getListTimeEntries(date string, project string) ([]TimeEntryResponse, error) {
 	client := &http.Client{}
 
 	url := "https://support.bergen.tech/" + "time_entries.json?key=" + t.RedmineAPIKey
@@ -107,31 +115,31 @@ func (t Texporter) getListTimeEntries(date string, project string) []TimeEntryRe
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		log.Fatal(err)
+		return []TimeEntryResponse{}, fmt.Errorf("error during request creating with url - %v\n%v", url, err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return []TimeEntryResponse{}, fmt.Errorf("error during request doing with request - %v\n%v", req, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		log.Fatal("status code not in 2xx range")
+		return []TimeEntryResponse{}, fmt.Errorf("status code not in 2xx range with request -%v", req)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		return []TimeEntryResponse{}, fmt.Errorf("error during read response body\n%v", err)
 	}
 
 	teList := TimeEntryListResponse{}
 
 	err = json.Unmarshal(body, &teList)
 	if err != nil {
-		log.Fatal(err)
+		return []TimeEntryResponse{}, fmt.Errorf("error during unmarshaling body with list time entries response - \n%v", err)
 	}
 
-	return teList.TimeEntries
+	return teList.TimeEntries, nil
 }
 
 // detect last work date before today
@@ -164,7 +172,14 @@ func (t Texporter) exportAllTimeEntries() {
 		// key - user id; value - message to export
 		messages := make(map[int64]string)
 
-		timeEntries := t.getListTimeEntries(prevWorkDate(), p.ID)
+		timeEntries, err := t.getListTimeEntries(prevWorkDate(), p.ID)
+		if err != nil {
+			t.Logger.Errorw("error during get list time entries",
+				"Project:", p.Name,
+				"Project ID", p.ID,
+				"Error text", err,
+			)
+		}
 
 		for _, te := range timeEntries {
 			_, ok := messages[te.User.ID]
@@ -194,7 +209,20 @@ func (t Texporter) exportAllTimeEntries() {
 		}
 
 		for _, mess := range messages {
-			t.sendTextToChannel(p.ChatID, mess)
+			err = t.sendTextToChannel(p.ChatID, mess)
+			if err != nil {
+				t.Logger.Errorw("error during sending message to telegram channel",
+					"Project Name", p.Name,
+					"Telegram channel ID", p.ChatID,
+					"Message text", mess,
+					"Error", err,
+				)
+			}
+			t.Logger.Infow("success sent message to channel",
+				"Project name", p.Name,
+				"Telegram channel ID", p.ChatID,
+				"Message text", mess,
+			)
 		}
 	}
 }
@@ -202,11 +230,19 @@ func (t Texporter) exportAllTimeEntries() {
 func main() {
 	t, err := NewTexporter()
 	if err != nil {
-		log.Fatal(err)
+		t.Logger.Fatal(err)
 	}
+	defer t.Logger.Sync()
 
 	t.exportAllTimeEntries()
 
+	// sugar.Infow("failed to fetch URL",
+	// 	// Structured context as loosely typed key-value pairs.
+	// 	"url", url,
+	// 	"attempt", 3,
+	// 	"backoff", time.Second,
+	// )
+	// sugar.Infof("Failed to fetch URL: %s", url)
 	// updateConfig := tgbotapi.NewUpdate(0)
 
 	// updateConfig.Timeout = 30
