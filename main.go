@@ -17,6 +17,7 @@ type Project struct {
 	Name            string `json:"name"`
 	ChannelUsername string `json:"channel_username"`
 	ChatID          int64  `json:"chat_id"`
+	TestChatID      int64  `json:"test_chat_id"`
 	Tracker         string `json:"tracker"`
 	Export          bool   `json:"export"`
 }
@@ -93,7 +94,7 @@ func NewTexporter() (Texporter, error) {
 		return Texporter{}, fmt.Errorf("error during Telegram Bot creating\n%v", err)
 	}
 
-	// t.TelegramBot.Debug = true
+	t.TelegramBot.Debug = true
 
 	return t, nil
 }
@@ -163,14 +164,18 @@ func (t Texporter) sendTextToChannel(chatID int64, text string) error {
 	return nil
 }
 
-func (t Texporter) exportAllTimeEntries() {
+func (t Texporter) exportTimeEntries(isTest bool) {
 	for _, p := range t.ProjectList {
 		if !p.Export {
 			continue
 		}
 
-		// key - user id; value - message text to export
-		messages := make(map[int64]string)
+		var chatID int64
+		if isTest {
+			chatID = p.TestChatID
+		} else {
+			chatID = p.ChatID
+		}
 
 		timeEntries, err := t.getListTimeEntries(prevWorkDate(), p.ID)
 		if err != nil {
@@ -180,6 +185,8 @@ func (t Texporter) exportAllTimeEntries() {
 				"Error text", err,
 			)
 		}
+		// key - user id; value - message text to export
+		messages := make(map[int64]string)
 
 		for _, te := range timeEntries {
 			_, ok := messages[te.User.ID]
@@ -209,23 +216,81 @@ func (t Texporter) exportAllTimeEntries() {
 		}
 
 		for _, mess := range messages {
-			err = t.sendTextToChannel(p.ChatID, mess)
+			err = t.sendTextToChannel(chatID, mess)
 			if err != nil {
 				t.Logger.Errorw("error during sending message to telegram channel",
 					"Project Name", p.Name,
-					"Telegram channel ID", p.ChatID,
+					"Telegram channel ID", chatID,
 					"Message text", mess,
 					"Error", err,
 				)
 			} else {
 				t.Logger.Infow("success sent message to channel",
 					"Project name", p.Name,
-					"Telegram channel ID", p.ChatID,
+					"Telegram channel ID", chatID,
 					"Message text", mess,
 				)
 			}
 		}
 	}
+}
+
+func (t Texporter) botRunAndServe() error {
+	updateConfig := tgbotapi.NewUpdate(0)
+
+	updateConfig.Timeout = 30
+
+	updates := t.TelegramBot.GetUpdatesChan(updateConfig)
+
+	for update := range updates {
+		if update.Message == nil {
+			continue
+		}
+
+		chat := update.FromChat()
+		switch {
+		case chat.IsChannel():
+			t.Logger.Info("is channel")
+		case chat.IsGroup():
+			t.Logger.Info("is group")
+		case chat.IsPrivate():
+			t.Logger.Info("is private")
+		case chat.IsSuperGroup():
+			t.Logger.Info("is supergroup")
+		}
+
+		user := update.SentFrom()
+		t.Logger.Infow("got message",
+			"username", user.UserName,
+			"user ID", user.ID,
+			"is bot", user.IsBot,
+		)
+
+		helper := "0. Test\n1. 'Export all'\n2. 'Export BIS'\n3. 'Export EMS'\n4. 'Export SDS'\n"
+
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, helper)
+
+		switch update.Message.Text {
+		case "Test":
+			t.Logger.Debug("start test export all entries")
+			t.exportTimeEntries(true)
+		case "Export all":
+			t.Logger.Info("start export all entries")
+			// t.exportTimeEntries(false)
+		case "Export BIS":
+			t.Logger.Info("start export BIS entries only")
+		case "Export EMS":
+			t.Logger.Info("start export EMS entries only")
+		case "Export SDS":
+			t.Logger.Info("start export SDS entries only")
+		}
+
+		if _, err := t.TelegramBot.Send(msg); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func main() {
@@ -235,18 +300,5 @@ func main() {
 	}
 	defer t.Logger.Sync()
 
-	t.exportAllTimeEntries()
-
-	// updateConfig := tgbotapi.NewUpdate(0)
-
-	// updateConfig.Timeout = 30
-
-	// updates := t.TelegramBot.GetUpdatesChan(updateConfig)
-
-	// for update := range updates {
-
-	// 	if update.Message == nil {
-	// 		continue
-	// 	}
-	// }
+	t.Logger.Fatal(t.botRunAndServe())
 }
