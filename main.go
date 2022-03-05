@@ -169,7 +169,7 @@ func (t Texporter) exportAllTimeEntries() {
 			continue
 		}
 
-		// key - user id; value - message to export
+		// key - user id; value - message text to export
 		messages := make(map[int64]string)
 
 		timeEntries, err := t.getListTimeEntries(prevWorkDate(), p.ID)
@@ -217,12 +217,13 @@ func (t Texporter) exportAllTimeEntries() {
 					"Message text", mess,
 					"Error", err,
 				)
+			} else {
+				t.Logger.Infow("success sent message to channel",
+					"Project name", p.Name,
+					"Telegram channel ID", p.ChatID,
+					"Message text", mess,
+				)
 			}
-			t.Logger.Infow("success sent message to channel",
-				"Project name", p.Name,
-				"Telegram channel ID", p.ChatID,
-				"Message text", mess,
-			)
 		}
 	}
 }
@@ -236,13 +237,6 @@ func main() {
 
 	t.exportAllTimeEntries()
 
-	// sugar.Infow("failed to fetch URL",
-	// 	// Structured context as loosely typed key-value pairs.
-	// 	"url", url,
-	// 	"attempt", 3,
-	// 	"backoff", time.Second,
-	// )
-	// sugar.Infof("Failed to fetch URL: %s", url)
 	// updateConfig := tgbotapi.NewUpdate(0)
 
 	// updateConfig.Timeout = 30
