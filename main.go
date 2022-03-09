@@ -62,7 +62,15 @@ type Texporter struct {
 	TelegramBot   *tgbotapi.BotAPI
 	ProjectList   []Project
 	Logger        *zap.SugaredLogger
+	botState      string
 }
+
+var typesKeyboard = tgbotapi.NewInlineKeyboardMarkup(
+	tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("test", "test"),
+		tgbotapi.NewInlineKeyboardButtonData("prod", "prod"),
+	),
+)
 
 func NewTexporter() (Texporter, error) {
 	t := Texporter{}
@@ -93,6 +101,8 @@ func NewTexporter() (Texporter, error) {
 	if err != nil {
 		return Texporter{}, fmt.Errorf("error during Telegram Bot creating\n%v", err)
 	}
+
+	t.botState = "type"
 
 	t.TelegramBot.Debug = true
 
@@ -164,7 +174,7 @@ func (t Texporter) sendTextToChannel(chatID int64, text string) error {
 	return nil
 }
 
-func (t Texporter) exportTimeEntries(isTest bool) {
+func (t Texporter) exportTimeEntries(date string, isTest bool) {
 	for _, p := range t.ProjectList {
 		if !p.Export {
 			continue
@@ -177,7 +187,7 @@ func (t Texporter) exportTimeEntries(isTest bool) {
 			chatID = p.ChatID
 		}
 
-		timeEntries, err := t.getListTimeEntries(prevWorkDate(), p.ID)
+		timeEntries, err := t.getListTimeEntries(date, p.ID)
 		if err != nil {
 			t.Logger.Errorw("error during get list time entries",
 				"Project:", p.Name,
@@ -236,6 +246,18 @@ func (t Texporter) exportTimeEntries(isTest bool) {
 }
 
 func (t Texporter) botRunAndServe() error {
+	var numericKeyboard = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("1.com", "http://1.com"),
+			tgbotapi.NewInlineKeyboardButtonData("2", "2"),
+			tgbotapi.NewInlineKeyboardButtonData("3", "3"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("4", "4"),
+			tgbotapi.NewInlineKeyboardButtonData("5", "5"),
+			tgbotapi.NewInlineKeyboardButtonData("6", "6"),
+		),
+	)
 	updateConfig := tgbotapi.NewUpdate(0)
 
 	updateConfig.Timeout = 30
@@ -243,53 +265,84 @@ func (t Texporter) botRunAndServe() error {
 	updates := t.TelegramBot.GetUpdatesChan(updateConfig)
 
 	for update := range updates {
-		if update.Message == nil {
-			continue
+		if update.Message != nil {
+			// Construct a new message from the given chat ID and containing
+			// the text that we received.
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
+
+			// If the message was open, add a copy of our numeric keyboard.
+			switch update.Message.Text {
+			case "open":
+				msg.ReplyMarkup = numericKeyboard
+
+			}
+
+			// Send the message.
+			if _, err := t.TelegramBot.Send(msg); err != nil {
+				panic(err)
+			}
+		} else if update.CallbackQuery != nil {
+			// Respond to the callback query, telling Telegram to show the user
+			// a message with the data received.
+			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, update.CallbackQuery.Data)
+			if _, err := t.TelegramBot.Request(callback); err != nil {
+				panic(err)
+			}
+
+			// And finally, send a message containing the data received.
+			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Data)
+			if _, err := t.TelegramBot.Send(msg); err != nil {
+				panic(err)
+			}
 		}
+		// if update.Message != nil {
+		// 	user := update.SentFrom()
+		// 	t.Logger.Infow("got message",
+		// 		"username", user.UserName,
+		// 		"user ID", user.ID,
+		// 		"is bot", user.IsBot,
+		// 	)
 
-		chat := update.FromChat()
-		switch {
-		case chat.IsChannel():
-			t.Logger.Info("is channel")
-		case chat.IsGroup():
-			t.Logger.Info("is group")
-		case chat.IsPrivate():
-			t.Logger.Info("is private")
-		case chat.IsSuperGroup():
-			t.Logger.Info("is supergroup")
-		}
+		// 	// helper := "0. Test\n1. 'Export all'\n2. 'Export BIS'\n3. 'Export EMS'\n4. 'Export SDS'\n"
 
-		user := update.SentFrom()
-		t.Logger.Infow("got message",
-			"username", user.UserName,
-			"user ID", user.ID,
-			"is bot", user.IsBot,
-		)
+		// 	var msg tgbotapi.MessageConfig
+		// 	switch t.botState {
+		// 	case "type":
+		// 		msg = tgbotapi.NewMessage(update.Message.Chat.ID, "what to do?")
+		// 		msg.ReplyMarkup = typesKeyboard
+		// 	}
 
-		helper := "0. Test\n1. 'Export all'\n2. 'Export BIS'\n3. 'Export EMS'\n4. 'Export SDS'\n"
+		// 	// switch update.Message.Text {
+		// 	// case "Test":
+		// 	// 	t.Logger.Debug("start test export all entries")
+		// 	// 	t.exportTimeEntries(prevWorkDate(), true) //export to test channels
+		// 	// case "Export all":
+		// 	// 	t.Logger.Info("start export all entries")
+		// 	// 	t.exportTimeEntries(prevWorkDate(), false) //export to prod channels
+		// 	// case "Export BIS":
+		// 	// 	t.Logger.Info("start export BIS entries only")
+		// 	// case "Export EMS":
+		// 	// 	t.Logger.Info("start export EMS entries only")
+		// 	// case "Export SDS":
+		// 	// 	t.Logger.Info("start export SDS entries only")
+		// 	// }
 
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, helper)
+		// 	if _, err := t.TelegramBot.Send(msg); err != nil {
+		// 		return err
+		// 	} else if update.CallbackQuery != nil {
+		// 		callback := tgbotapi.NewCallback(update.CallbackQuery.ID, update.CallbackQuery.Data)
+		// 		if _, err := t.TelegramBot.Request(callback); err != nil {
+		// 			panic(err)
+		// 		}
 
-		switch update.Message.Text {
-		case "Test":
-			t.Logger.Debug("start test export all entries")
-			t.exportTimeEntries(true)
-		case "Export all":
-			t.Logger.Info("start export all entries")
-			// t.exportTimeEntries(false)
-		case "Export BIS":
-			t.Logger.Info("start export BIS entries only")
-		case "Export EMS":
-			t.Logger.Info("start export EMS entries only")
-		case "Export SDS":
-			t.Logger.Info("start export SDS entries only")
-		}
-
-		if _, err := t.TelegramBot.Send(msg); err != nil {
-			return err
-		}
+		// 		// And finally, send a message containing the data received.
+		// 		msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Data+" "+update.CallbackQuery.ID)
+		// 		if _, err := t.TelegramBot.Send(msg); err != nil {
+		// 			return err
+		// 		}
+		// 	}
+		// }
 	}
-
 	return nil
 }
 
