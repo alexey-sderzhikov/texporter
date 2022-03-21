@@ -62,13 +62,26 @@ type Texporter struct {
 	TelegramBot   *tgbotapi.BotAPI
 	ProjectList   []Project
 	Logger        *zap.SugaredLogger
-	botState      string
+	Model         model
+}
+
+type model struct {
+	state  string
+	isTest bool
+	date   string
 }
 
 var typesKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("test", "test"),
 		tgbotapi.NewInlineKeyboardButtonData("prod", "prod"),
+	),
+)
+
+var readyKeyboard = tgbotapi.NewInlineKeyboardMarkup(
+	tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("yes", "yes"),
+		tgbotapi.NewInlineKeyboardButtonData("no", "no"),
 	),
 )
 
@@ -102,7 +115,7 @@ func NewTexporter() (Texporter, error) {
 		return Texporter{}, fmt.Errorf("error during Telegram Bot creating\n%v", err)
 	}
 
-	t.botState = "type"
+	t.Model = model{}
 
 	t.TelegramBot.Debug = true
 
@@ -153,14 +166,14 @@ func (t Texporter) getListTimeEntries(date string, project string) ([]TimeEntryR
 	return teList.TimeEntries, nil
 }
 
-// detect last work date before today
-func prevWorkDate() string {
+// detect last work date before today, if offset != 0 - detect 'last work date minus offset'
+func prevWorkDate(offset int) string {
 	today := time.Now()
 	if today.Weekday() == time.Monday {
-		return today.AddDate(0, 0, -3).Format("2006-01-02")
+		return today.AddDate(0, 0, offset-3).Format("2006-01-02")
 	}
 
-	return today.AddDate(0, 0, -1).Format("2006-01-02")
+	return today.AddDate(0, 0, offset-1).Format("2006-01-02")
 }
 
 func (t Texporter) sendTextToChannel(chatID int64, text string) error {
@@ -245,19 +258,32 @@ func (t Texporter) exportTimeEntries(date string, isTest bool) {
 	}
 }
 
-func (t Texporter) botRunAndServe() error {
-	var numericKeyboard = tgbotapi.NewInlineKeyboardMarkup(
+func newDateKeyboard() tgbotapi.InlineKeyboardMarkup {
+	today := time.Now()
+	dates := [4]string{
+		today.AddDate(0, 0, -1).Format("2006-01-02"),
+		today.AddDate(0, 0, -2).Format("2006-01-02"),
+		today.AddDate(0, 0, -3).Format("2006-01-02"),
+		today.AddDate(0, 0, -4).Format("2006-01-02"),
+	}
+
+	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("1.com", "http://1.com"),
-			tgbotapi.NewInlineKeyboardButtonData("2", "2"),
-			tgbotapi.NewInlineKeyboardButtonData("3", "3"),
+			tgbotapi.NewInlineKeyboardButtonData("yesterday", dates[0]),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("4", "4"),
-			tgbotapi.NewInlineKeyboardButtonData("5", "5"),
-			tgbotapi.NewInlineKeyboardButtonData("6", "6"),
+			tgbotapi.NewInlineKeyboardButtonData(dates[1], dates[1]),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(dates[2], dates[2]),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(dates[3], dates[3]),
 		),
 	)
+}
+
+func (t Texporter) botRunAndServe() error {
 	updateConfig := tgbotapi.NewUpdate(0)
 
 	updateConfig.Timeout = 30
@@ -265,19 +291,13 @@ func (t Texporter) botRunAndServe() error {
 	updates := t.TelegramBot.GetUpdatesChan(updateConfig)
 
 	for update := range updates {
-		if update.Message != nil {
-			// Construct a new message from the given chat ID and containing
-			// the text that we received.
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
+		if update.Message != nil && update.Message.Text == "start" {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "what to do?")
 
-			// If the message was open, add a copy of our numeric keyboard.
-			switch update.Message.Text {
-			case "open":
-				msg.ReplyMarkup = numericKeyboard
+			msg.ReplyMarkup = typesKeyboard
 
-			}
+			t.Model.state = "type"
 
-			// Send the message.
 			if _, err := t.TelegramBot.Send(msg); err != nil {
 				panic(err)
 			}
@@ -289,59 +309,49 @@ func (t Texporter) botRunAndServe() error {
 				panic(err)
 			}
 
-			// And finally, send a message containing the data received.
-			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Data)
-			if _, err := t.TelegramBot.Send(msg); err != nil {
-				panic(err)
+			switch t.Model.state {
+			case "type":
+				switch update.CallbackQuery.Data {
+				case "prod":
+					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "date?")
+					msg.ReplyMarkup = newDateKeyboard()
+
+					t.Model.state = "date"
+					t.Model.isTest = false
+
+					if _, err := t.TelegramBot.Send(msg); err != nil {
+						panic(err)
+					}
+				}
+			case "date":
+				t.Model.state = "ready"
+				t.Model.date = update.CallbackQuery.Data
+				msg := tgbotapi.NewMessage(
+					update.CallbackQuery.Message.Chat.ID,
+					fmt.Sprintf("export to all channels on date %v", t.Model.date),
+				)
+
+				msg.ReplyMarkup = readyKeyboard
+
+				if _, err := t.TelegramBot.Send(msg); err != nil {
+					panic(err)
+				}
+			case "ready":
+				if update.CallbackQuery.Data == "yes" {
+					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "iam did something!")
+
+					t.Logger.Debug("start test export all entries")
+					t.exportTimeEntries(t.Model.date, t.Model.isTest) //export to test channels
+
+					if _, err := t.TelegramBot.Send(msg); err != nil {
+						panic(err)
+					}
+				}
+
+				t.Model = model{}
 			}
+
 		}
-		// if update.Message != nil {
-		// 	user := update.SentFrom()
-		// 	t.Logger.Infow("got message",
-		// 		"username", user.UserName,
-		// 		"user ID", user.ID,
-		// 		"is bot", user.IsBot,
-		// 	)
-
-		// 	// helper := "0. Test\n1. 'Export all'\n2. 'Export BIS'\n3. 'Export EMS'\n4. 'Export SDS'\n"
-
-		// 	var msg tgbotapi.MessageConfig
-		// 	switch t.botState {
-		// 	case "type":
-		// 		msg = tgbotapi.NewMessage(update.Message.Chat.ID, "what to do?")
-		// 		msg.ReplyMarkup = typesKeyboard
-		// 	}
-
-		// 	// switch update.Message.Text {
-		// 	// case "Test":
-		// 	// 	t.Logger.Debug("start test export all entries")
-		// 	// 	t.exportTimeEntries(prevWorkDate(), true) //export to test channels
-		// 	// case "Export all":
-		// 	// 	t.Logger.Info("start export all entries")
-		// 	// 	t.exportTimeEntries(prevWorkDate(), false) //export to prod channels
-		// 	// case "Export BIS":
-		// 	// 	t.Logger.Info("start export BIS entries only")
-		// 	// case "Export EMS":
-		// 	// 	t.Logger.Info("start export EMS entries only")
-		// 	// case "Export SDS":
-		// 	// 	t.Logger.Info("start export SDS entries only")
-		// 	// }
-
-		// 	if _, err := t.TelegramBot.Send(msg); err != nil {
-		// 		return err
-		// 	} else if update.CallbackQuery != nil {
-		// 		callback := tgbotapi.NewCallback(update.CallbackQuery.ID, update.CallbackQuery.Data)
-		// 		if _, err := t.TelegramBot.Request(callback); err != nil {
-		// 			panic(err)
-		// 		}
-
-		// 		// And finally, send a message containing the data received.
-		// 		msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, update.CallbackQuery.Data+" "+update.CallbackQuery.ID)
-		// 		if _, err := t.TelegramBot.Send(msg); err != nil {
-		// 			return err
-		// 		}
-		// 	}
-		// }
 	}
 	return nil
 }
