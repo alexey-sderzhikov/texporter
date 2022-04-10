@@ -73,15 +73,17 @@ type model struct {
 
 var typesKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("test", "test"),
-		tgbotapi.NewInlineKeyboardButtonData("prod", "prod"),
+		tgbotapi.NewInlineKeyboardButtonData("выгружаем списания", "export"),
+	),
+	tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("напоминаем списаться", "notification"),
 	),
 )
 
 var readyKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("yes", "yes"),
-		tgbotapi.NewInlineKeyboardButtonData("no", "no"),
+		tgbotapi.NewInlineKeyboardButtonData("да", "yes"),
+		tgbotapi.NewInlineKeyboardButtonData("не", "no"),
 	),
 )
 
@@ -269,16 +271,16 @@ func newDateKeyboard() tgbotapi.InlineKeyboardMarkup {
 
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("yesterday", dates[0]),
+			tgbotapi.NewInlineKeyboardButtonData("за вчера", dates[0]),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(dates[1], dates[1]),
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("за %v", dates[1]), dates[1]),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(dates[2], dates[2]),
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("за %v", dates[2]), dates[2]),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(dates[3], dates[3]),
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("за %v", dates[3]), dates[3]),
 		),
 	)
 }
@@ -291,8 +293,8 @@ func (t Texporter) botRunAndServe() error {
 	updates := t.TelegramBot.GetUpdatesChan(updateConfig)
 
 	for update := range updates {
-		if update.Message != nil && update.Message.Text == "start" {
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "what to do?")
+		if update.Message != nil {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "что будем делать, ммм?")
 
 			msg.ReplyMarkup = typesKeyboard
 
@@ -302,8 +304,6 @@ func (t Texporter) botRunAndServe() error {
 				panic(err)
 			}
 		} else if update.CallbackQuery != nil {
-			// Respond to the callback query, telling Telegram to show the user
-			// a message with the data received.
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, update.CallbackQuery.Data)
 			if _, err := t.TelegramBot.Request(callback); err != nil {
 				panic(err)
@@ -312,12 +312,12 @@ func (t Texporter) botRunAndServe() error {
 			switch t.Model.state {
 			case "type":
 				switch update.CallbackQuery.Data {
-				case "prod":
-					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "date?")
+				case "export":
+					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "а за какой день?")
 					msg.ReplyMarkup = newDateKeyboard()
 
 					t.Model.state = "date"
-					t.Model.isTest = false
+					t.Model.isTest = true
 
 					if _, err := t.TelegramBot.Send(msg); err != nil {
 						panic(err)
@@ -326,9 +326,18 @@ func (t Texporter) botRunAndServe() error {
 			case "date":
 				t.Model.state = "ready"
 				t.Model.date = update.CallbackQuery.Data
+
+				// agregate all project for time entries export
+				projectsForExport := make([]string, 0)
+				for _, p := range t.ProjectList {
+					if p.Export {
+						projectsForExport = append(projectsForExport, p.Name)
+					}
+				}
+
 				msg := tgbotapi.NewMessage(
 					update.CallbackQuery.Message.Chat.ID,
-					fmt.Sprintf("export to all channels on date %v", t.Model.date),
+					fmt.Sprintf("давай повторим - выгружаю списания на проектах: %v, за %v число", projectsForExport, t.Model.date),
 				)
 
 				msg.ReplyMarkup = readyKeyboard
@@ -338,10 +347,10 @@ func (t Texporter) botRunAndServe() error {
 				}
 			case "ready":
 				if update.CallbackQuery.Data == "yes" {
-					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "iam did something!")
+					msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "я закончил!")
 
 					t.Logger.Debug("start test export all entries")
-					t.exportTimeEntries(t.Model.date, t.Model.isTest) //export to test channels
+					t.exportTimeEntries(t.Model.date, t.Model.isTest)
 
 					if _, err := t.TelegramBot.Send(msg); err != nil {
 						panic(err)
