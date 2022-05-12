@@ -262,11 +262,12 @@ func (t Texporter) exportTimeEntries(date string, isTest bool) {
 
 func newDateKeyboard() tgbotapi.InlineKeyboardMarkup {
 	today := time.Now()
-	dates := [4]string{
+	dates := [5]string{
 		today.AddDate(0, 0, -1).Format("2006-01-02"),
 		today.AddDate(0, 0, -2).Format("2006-01-02"),
 		today.AddDate(0, 0, -3).Format("2006-01-02"),
 		today.AddDate(0, 0, -4).Format("2006-01-02"),
+		today.AddDate(0, 0, -5).Format("2006-01-02"),
 	}
 
 	return tgbotapi.NewInlineKeyboardMarkup(
@@ -281,6 +282,9 @@ func newDateKeyboard() tgbotapi.InlineKeyboardMarkup {
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("за %v", dates[3]), dates[3]),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("за %v", dates[4]), dates[4]),
 		),
 	)
 }
@@ -317,7 +321,7 @@ func (t Texporter) botRunAndServe() error {
 					msg.ReplyMarkup = newDateKeyboard()
 
 					t.Model.state = "date"
-					t.Model.isTest = true
+					t.Model.isTest = false
 
 					if _, err := t.TelegramBot.Send(msg); err != nil {
 						panic(err)
