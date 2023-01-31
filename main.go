@@ -26,6 +26,7 @@ type Config struct {
 	RedmineAPIKey    string    `json:"redmine_api_key"`
 	TelegramBotToken string    `json:"telegram_bot_token"`
 	ProjectList      []Project `json:"projects"`
+	Users            []string  `json:"users"`
 }
 
 type NameAndID struct {
@@ -63,6 +64,7 @@ type Texporter struct {
 	ProjectList   []Project
 	Logger        *zap.SugaredLogger
 	Model         model
+	users         []string
 }
 
 type model struct {
@@ -76,7 +78,7 @@ var typesKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardButtonData("выгружаем списания", "export"),
 	),
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("напоминаем списаться", "notification"),
+		tgbotapi.NewInlineKeyboardButtonData("ищем крыс", "find_rats"),
 	),
 )
 
@@ -110,6 +112,8 @@ func NewTexporter() (Texporter, error) {
 
 	t.ProjectList = config.ProjectList
 
+	t.users = config.Users
+
 	t.RedmineAPIKey = config.RedmineAPIKey
 
 	t.TelegramBot, err = tgbotapi.NewBotAPI(config.TelegramBotToken)
@@ -141,41 +145,36 @@ func (t Texporter) getListTimeEntries(date string, project string) ([]TimeEntryR
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return []TimeEntryResponse{}, fmt.Errorf("error during request creating with url - %v\n%v", url, err)
+		return nil, fmt.Errorf("error during request creating with url - %v\n%v", url, err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return []TimeEntryResponse{}, fmt.Errorf("error during request doing with request - %v\n%v", req, err)
+		return nil, fmt.Errorf("error during request doing with request - %v\n%v", req, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return []TimeEntryResponse{}, fmt.Errorf("status code not in 2xx range with request -%v", req)
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("error during read response body\n%v", err)
+		}
+		fmt.Println("body received of error - ", string(body))
+		return nil, fmt.Errorf("status code not in 2xx range with request -%v", req)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return []TimeEntryResponse{}, fmt.Errorf("error during read response body\n%v", err)
+		return nil, fmt.Errorf("error during read response body\n%v", err)
 	}
 
 	teList := TimeEntryListResponse{}
 
 	err = json.Unmarshal(body, &teList)
 	if err != nil {
-		return []TimeEntryResponse{}, fmt.Errorf("error during unmarshaling body with list time entries response - \n%v", err)
+		return nil, fmt.Errorf("error during unmarshaling body with list time entries response - \n%v", err)
 	}
 
 	return teList.TimeEntries, nil
-}
-
-// detect last work date before today, if offset != 0 - detect 'last work date minus offset'
-func prevWorkDate(offset int) string {
-	today := time.Now()
-	if today.Weekday() == time.Monday {
-		return today.AddDate(0, 0, offset-3).Format("2006-01-02")
-	}
-
-	return today.AddDate(0, 0, offset-1).Format("2006-01-02")
 }
 
 func (t Texporter) sendTextToChannel(chatID int64, text string) error {
@@ -297,8 +296,16 @@ func (t Texporter) botRunAndServe() error {
 	updates := t.TelegramBot.GetUpdatesChan(updateConfig)
 
 	for update := range updates {
+		if !t.userIsValid(update.SentFrom()) {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "я тебя не знаю, пока.")
+
+			if _, err := t.TelegramBot.Send(msg); err != nil {
+				panic(err)
+			}
+			continue
+		}
 		if update.Message != nil {
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "что будем делать, ммм?")
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("что будем делать, %s, ммм?))))", update.SentFrom().FirstName))
 
 			msg.ReplyMarkup = typesKeyboard
 
@@ -367,6 +374,16 @@ func (t Texporter) botRunAndServe() error {
 		}
 	}
 	return nil
+}
+
+func (t Texporter) userIsValid(u *tgbotapi.User) bool {
+	for _, vu := range t.users {
+		if u.UserName == vu || fmt.Sprintf("%d", u.ID) == vu {
+			return true
+		}
+	}
+
+	return false
 }
 
 func main() {
